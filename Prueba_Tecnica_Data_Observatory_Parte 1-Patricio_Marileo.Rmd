@@ -1,0 +1,508 @@
+---
+title: "Prueba Tecnica Data Observatory Parte 1"
+author: "P Marileo"
+date: "2025-06-04"
+output: html_document
+---
+
+```{r}
+library(dplyr)
+library(readr)
+library(stringdist)
+library(stringi)
+library(stringr)
+library(lubridate)
+library(summarytools)
+library(tidyr)
+```
+
+```{r}
+salud_individual <- read_csv("C:/Users/pmmpm/Downloads/datos/datos_salud_individual.csv")
+View(salud_individual)
+
+# Datos Vienen sin necesidad de separadores adicionales en este CSV
+```
+```{r}
+# Aprovechando que tenemos 3 columnas Validamos Fechas y asi dejamos todo listo , al inciar codiog nos percatamos que hay fechas en distintos formatos y algunos invalidos 
+
+# Verifica si la cadena es una fecha válida en formato ymd
+df_texto_nacimiento <- salud_individual %>%
+  mutate(raw_fn = as.character(fecha_nacimiento),
+         fecha_valida = suppressWarnings(!is.na(ymd(raw_fn)))) %>%
+  filter(!fecha_valida) %>%
+  select(raw_fn) %>%
+  distinct()
+
+df_texto_atencion <- salud_individual %>%
+  mutate(raw_fa = as.character(fecha_atencion),
+         fecha_valida = suppressWarnings(!is.na(ymd(raw_fa)))) %>%
+  filter(!fecha_valida) %>%
+  select(raw_fa) %>%
+  distinct()
+
+df_texto_sintomas <- salud_individual %>%
+  mutate(raw_fs = as.character(fecha_inicio_sintomas),
+         fecha_valida = suppressWarnings(!is.na(ymd(raw_fs)))) %>%
+  filter(!fecha_valida) %>%
+  select(raw_fs) %>%
+  distinct()
+
+# Mostrar los resultados
+print("Valores en 'fecha_nacimiento' que NO son fechas válidas:")
+print(df_texto_nacimiento)
+
+print("Valores en 'fecha_atencion' que NO son fechas válidas:")
+print(df_texto_atencion)
+
+print("Valores en 'fecha_inicio_sintomas' que NO son fechas válidas:")
+print(df_texto_sintomas)
+```
+
+
+```{r}
+
+# Se unifica el formato para poder trabajarlo mejor y evitar probelmas de formato
+salud_individual <- salud_individual %>%
+  mutate(
+    fecha_nacimiento = parse_date_time(as.character(fecha_nacimiento), 
+                                       orders = c("dmy", "ymd", "mdy"), 
+                                       exact = FALSE),
+    
+    fecha_atencion = parse_date_time(as.character(fecha_atencion), 
+                                     orders = c("dmy", "ymd", "mdy"), 
+                                     exact = FALSE),
+    
+    fecha_inicio_sintomas = parse_date_time(as.character(fecha_inicio_sintomas), 
+                                           orders = c("dmy", "ymd", "mdy"), 
+                                           exact = FALSE)
+  )
+# limpiamos 
+```
+
+
+
+```{r}
+# Convertir la fecha de referencia , en este caso el dia de la entrega del archivo 
+fecha_ref <- as.Date("2025-06-04")
+
+# Asegurarse que las columnas estén como tipo Date (por si acaso)
+salud_individual <- salud_individual %>%
+  mutate(
+    fecha_nacimiento = as.Date(fecha_nacimiento),
+    fecha_atencion = as.Date(fecha_atencion),
+    fecha_inicio_sintoma = as.Date(fecha_inicio_sintomas)
+  )
+
+# Crear resumen por columna
+validacion_fechas <- tibble(
+  columna = c("fecha_nacimiento", "fecha_atencion", "fecha_inicio_sintomas"),
+  total_NA = c(
+    sum(is.na(salud_individual$fecha_nacimiento)),
+    sum(is.na(salud_individual$fecha_atencion)),
+    sum(is.na(salud_individual$fecha_inicio_sintomas))
+  ),
+  futuras = c(
+    sum(salud_individual$fecha_nacimiento > fecha_ref, na.rm = TRUE),
+    sum(salud_individual$fecha_atencion > fecha_ref, na.rm = TRUE),
+    sum(salud_individual$fecha_inicio_sintomas > fecha_ref, na.rm = TRUE)
+  ),
+  validas = c(
+    sum(salud_individual$fecha_nacimiento <= fecha_ref, na.rm = TRUE),
+    sum(salud_individual$fecha_atencion <= fecha_ref, na.rm = TRUE),
+    sum(salud_individual$fecha_inicio_sintomas <= fecha_ref, na.rm = TRUE)
+  )
+)
+
+print(validacion_fechas)
+
+# en vista de la presencia de 3 columnas con feccha se aprovecho de hacer con 3 columnas el analisis teniendo la cantidad total de NA, fechas superiores a lo estipulado , y fechas validas , al estar adelantadas a la fecha  no sirven por lo tanto se dejan como Na 
+
+```
+
+```{r}
+
+# Verifica si la cadena es una fecha válida en formato ymd
+df_texto_nacimiento <- salud_individual %>%
+  mutate(raw_fn = as.character(fecha_nacimiento),
+         fecha_valida = suppressWarnings(!is.na(ymd(raw_fn)))) %>%
+  filter(!fecha_valida) %>%
+  select(raw_fn) %>%
+  distinct()
+
+df_texto_atencion <- salud_individual %>%
+  mutate(raw_fa = as.character(fecha_atencion),
+         fecha_valida = suppressWarnings(!is.na(ymd(raw_fa)))) %>%
+  filter(!fecha_valida) %>%
+  select(raw_fa) %>%
+  distinct()
+
+df_texto_sintomas <- salud_individual %>%
+  mutate(raw_fs = as.character(fecha_inicio_sintomas),
+         fecha_valida = suppressWarnings(!is.na(ymd(raw_fs)))) %>%
+  filter(!fecha_valida) %>%
+  select(raw_fs) %>%
+  distinct()
+
+# Mostrar los resultados
+print("Valores en 'fecha_nacimiento' que NO son fechas válidas:")
+print(df_texto_nacimiento)
+
+print("Valores en 'fecha_atencion' que NO son fechas válidas:")
+print(df_texto_atencion)
+
+print("Valores en 'fecha_inicio_sintomas' que NO son fechas válidas:")
+print(df_texto_sintomas)
+
+```
+
+
+
+
+```{r}
+salud_individual <- salud_individual %>%
+  mutate(
+    # Imputar valores mayores a la referencia como NA 
+    fecha_nacimiento = if_else(fecha_nacimiento > fecha_ref, as.Date(NA), as.Date(fecha_nacimiento)),
+    fecha_atencion = if_else(fecha_atencion > fecha_ref, as.Date(NA), as.Date(fecha_atencion)),
+    fecha_inicio_sintomas = if_else(fecha_inicio_sintomas > fecha_ref, as.Date(NA), as.Date(fecha_inicio_sintomas))
+  )
+```
+
+
+```{r}
+salud_individual <- salud_individual %>%
+  filter(is.na(fecha_inicio_sintomas) | is.na(fecha_atencion) | fecha_inicio_sintomas <= fecha_atencion)
+
+```
+
+
+
+```{r}
+# Se hizo Comando unique para ir revsiando 
+unique(salud_individual$comuna_residencia)
+
+```
+```{r}
+#En vista de la gran cantidad de casos para revisar , se utilizo una tecnica de NLP para revision y depuracion de las comunas
+
+
+# 1. Crear una versión limpia de los nombres
+salud_individual <- salud_individual %>%
+  mutate(comuna_limpia = comuna_residencia %>%
+           tolower() %>%                        # pasar a minúsculas
+           stri_trans_general("Latin-ASCII") %>% # eliminar tildes
+           trimws())     
+
+# 2. Obtener valores únicos
+comunas_unicas <- unique(salud_individual$comuna_limpia)
+
+# 3. Crear matriz de distancias
+dist_matrix <- stringdistmatrix(comunas_unicas, comunas_unicas, method = "jw")
+
+# 4. Hacer clustering jerárquico
+hc <- hclust(as.dist(dist_matrix), method = "average")
+
+# 5. Cortar el árbol en clusters 
+grupos <- cutree(hc, h = 0.15)
+
+# 6. Crear tabla de grupos y nombre estándar por grupo (puedes cambiar lógica del nombre estándar)
+df_grupos <- data.frame(
+  comuna_limpia = comunas_unicas,
+  grupo = grupos
+) %>%
+  group_by(grupo) %>%
+  mutate(nombre_estandar = comuna_limpia[which.min(nchar(comuna_limpia))]) %>%
+  ungroup()
+
+# 7. Reemplazar en la base original
+salud_individual <- salud_individual %>%
+  left_join(df_grupos, by = "comuna_limpia") %>%
+  mutate(comuna_estandar = nombre_estandar)# quitar espacios
+```
+
+
+
+
+```{r}
+# Unique para validar
+
+unique(salud_individual$comuna_estandar)
+```
+
+```{r}
+
+# validado todo se hace correcciones , y se vuelve a validar , se aporvecha de dejar los nombres con Mayuscula para formato 
+salud_individual <- salud_individual %>%
+  mutate(
+    comuna_estandar = case_when(
+      comuna_estandar %in% c("condes") ~ "Las Condes",
+      comuna_estandar %in% c("prov.", "provi") ~ "Providencia",
+      comuna_estandar %in% c("conce", "concep.") ~ "Concepcion",
+      comuna_estandar %in% c("v.mar", "vina", "v. del mar") ~ "Vina Del Mar",
+      comuna_estandar == "valpo" ~ "Valparaiso",
+      comuna_estandar %in% c("sant.", "stgo") ~ "Santiago",
+      TRUE ~ comuna_estandar  # Mantener el resto tal como está
+    ),
+    comuna_estandar = str_to_title(comuna_estandar)  # Capitaliza cada palabra
+  )
+```
+
+
+```{r}
+# Validacion Final y reemplazo por limpieza y borrado de las columnas de clusterizacion 
+
+unique(salud_individual$comuna_estandar)
+
+# 1. Eliminar columna auxiliar si existe
+salud_individual <- salud_individual %>%
+  select(-nombre_estandar,-comuna_limpia,-grupo)
+
+# 2. Reemplazar comuna_residencia por comuna_estandar
+salud_individual <- salud_individual %>%
+  mutate(comuna_residencia = comuna_estandar) %>%
+  select(-comuna_estandar)
+
+```
+```{r}
+summary(salud_individual$edad)
+
+
+# tenemos presencia de Outlier como valores na , por ende vamos atener que recontruir a partir de la edad en Fecha de nacimiento , asi tendremos certeza sobre la edad
+```
+
+```{r}
+fecha_ref <- as.Date("2025-06-04")
+
+salud_individual <- salud_individual %>%
+  mutate(
+    edad = case_when(
+      is.na(fecha_nacimiento) ~ NA_integer_,
+      TRUE ~ as.integer(floor(time_length(interval(fecha_nacimiento, fecha_ref), unit = "years")))
+    )
+  )
+```
+
+```{r}
+summary(salud_individual$edad)
+# base esta mas limpia ahora , pero nos percatamos que hay recien nacidos que fueron atendidos o estan enfermo antes de ser nacidos  , asi validaremos y eliminaremos dichos casos 
+```
+```{r}
+# 1. Eliminar casos con errores lógicos
+salud_individual <- salud_individual %>%
+  filter(
+    is.na(fecha_nacimiento) |
+    (fecha_atencion >= fecha_nacimiento & fecha_inicio_sintomas >= fecha_nacimiento)
+  )
+
+```
+
+```{r}
+unique(salud_individual$sexo)
+
+# valores estan desordenados por lo que se va a ordenar y agregar una categoria para los Na , no Declarados 
+```
+
+
+```{r}
+salud_individual <- salud_individual %>%
+  mutate(
+    sexo = case_when(
+      sexo %in% c("M", "H", "Masculino") ~ "Masculino",
+      sexo %in% c("F", "Mujer", "Femenino", "V") ~ "Femenino",
+      is.na(sexo) ~ "No Declarado",
+      TRUE ~ "No Declarado"  
+    )
+  )
+```
+
+```{r}
+table(salud_individual$sexo, useNA = "ifany")
+
+# Validacion para ver resultados 
+
+```
+```{r}
+unique(salud_individual$diagnostico_principal)
+# me percate de que habia una gran cantidad de codigo para enfermedades por lo que busque las enfermdades que habia con unique y busque su codigo 
+```
+
+```{r}
+salud_individual <- salud_individual %>%
+  mutate(
+    diagnostico_principal = str_trim(str_to_sentence(diagnostico_principal)),
+    codigo_enfermedad = case_when(
+      diagnostico_principal == "Infección respiratoria" ~ "J06.9",
+      diagnostico_principal == "Hipertensión arterial" ~ "I10",
+      diagnostico_principal == "Control sano" ~ "Z00.0",
+      diagnostico_principal == "Gastroenteritis" ~ "A09.0",
+      diagnostico_principal == "Diabetes mellitus" ~ "E11",
+      TRUE ~ NA_character_  # Resto se deja como NA
+    )
+  )
+
+# se Asigno codigo , correspondiente a cada enfermedad o tratamiento 
+```
+
+```{r}
+# se aprovecha de crear grupo para segemnetar y analizar posteriomente 
+salud_individual <- salud_individual %>%
+  mutate(
+    grupo_etario = case_when(
+      edad < 5 ~ "Infante",
+      edad >= 5 & edad < 10 ~ "Escolar",
+      edad >= 10 & edad < 18 ~ "Adolescente",
+      edad >= 18 & edad < 65 ~ "Adulto",
+      edad >= 65 ~ "Mayor",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  mutate(
+    peso_valido = case_when(
+      is.na(peso_kg) ~ TRUE,  # Si no hay dato, no lo invalidamos aquí
+      grupo_etario == "Infante" & (peso_kg < 2 | peso_kg > 25) ~ FALSE,
+      grupo_etario == "Escolar" & (peso_kg < 10 | peso_kg > 40) ~ FALSE,
+      grupo_etario == "Adolescente" & (peso_kg < 30 | peso_kg > 120) ~ FALSE,
+      grupo_etario == "Adulto" & (peso_kg < 40 | peso_kg > 300) ~ FALSE,
+      grupo_etario == "Mayor" & (peso_kg < 40 | peso_kg > 250) ~ FALSE,
+      TRUE ~ TRUE
+    )
+  ) %>%
+  filter(peso_valido) %>%             # Borra los casos no válidos
+  select(-peso_valido)    
+# Hay casos que son Antropometricamente invalidos por lo que se proccede a hacer algunos filtro para crear vaiables mas manejables , otra opcion pudo ser modelar un arbol de decision para ver casos validos 
+```
+
+```{r}
+salud_individual <- salud_individual %>%
+  filter(!(diagnostico_principal == "Control sano" & gravedad != "Leve"))
+
+# Controles Sanos que esten Moderados o Graves se borran por entenderse control no diagostico  
+```
+
+```{r}
+
+salud_individual <- salud_individual %>%
+  # Separar en dos columnas
+  separate(presion_arterial, into = c("presion_sistolica", "presion_diastolica"), sep = "/", remove = FALSE) %>%
+  
+  # Convertir a numérico
+  mutate(
+    presion_sistolica = as.numeric(presion_sistolica),
+    presion_diastolica = as.numeric(presion_diastolica)
+  ) %>%
+  
+  # Validar rangos y coherencia
+  mutate(
+    presion_valida = case_when(
+      is.na(presion_sistolica) | is.na(presion_diastolica) ~ FALSE,
+      presion_sistolica < 70 | presion_sistolica > 250 ~ FALSE,
+      presion_diastolica < 40 | presion_diastolica > 150 ~ FALSE,
+      presion_sistolica < presion_diastolica + 10 ~ FALSE,
+      TRUE ~ TRUE
+    )
+  ) %>%
+  
+  # Filtrar solo registros válidos
+  filter(presion_valida) %>%
+  select(-presion_valida)
+
+```
+
+```{r}
+salud_individual <- salud_individual %>%
+  mutate(
+    clasificacion_pa = case_when(
+      presion_sistolica < 120 & presion_diastolica < 80 ~ "Normal",
+      presion_sistolica >= 120 & presion_sistolica < 130 & presion_diastolica < 80 ~ "Elevada",
+      presion_sistolica >= 130 & presion_sistolica < 140 | presion_diastolica >= 80 & presion_diastolica < 90 ~ "Hipertensión Etapa 1",
+      presion_sistolica >= 140 | presion_diastolica >= 90 ~ "Hipertensión Etapa 2",
+      presion_sistolica >= 180 | presion_diastolica >= 120 ~ "Crisis Hipertensiva",
+      TRUE ~ NA_character_
+    )
+  )
+
+```
+
+```{r}
+cat("REPORTE DE LIMPIEZA - FECHA: ", as.character(Sys.Date()), "\n\n")
+
+# Conteo inicial
+cat("Cantidad inicial de registros:", nrow(read_csv("C:/Users/pmmpm/Downloads/datos/datos_salud_individual.csv")), "\n")
+cat("Cantidad final de registros tras limpieza:", nrow(salud_individual), "\n\n")
+
+# Cantidad de registros eliminados por validación lógica de fechas
+cat("Fechas inválidas eliminadas (síntomas antes de nacer o futuro):", sum(is.na(salud_individual$edad)), "\n")
+
+# Comuna
+cat("Cantidad de comunas distintas tras estandarización:", length(unique(salud_individual$comuna_residencia)), "\n")
+
+# Sexo
+cat("Distribución de sexo tras limpieza:\n")
+print(table(salud_individual$sexo, useNA = "ifany"))
+
+# Diagnósticos clasificados
+cat("Diagnósticos con código ICD-10 asignado:\n")
+print(table(salud_individual$codigo_enfermedad, useNA = "ifany"))
+
+# Clasificación presión arterial
+cat("Clasificación presión arterial:\n")
+print(table(salud_individual$clasificacion_pa, useNA = "ifany"))
+
+```
+
+```{r}
+# Estadísticas descriptivas básicas
+edad_stats <- salud_individual %>%
+  summarise(
+    min_edad = min(edad, na.rm = TRUE),
+    promedio_edad = round(mean(edad, na.rm = TRUE), 1),
+    max_edad = max(edad, na.rm = TRUE)
+  )
+
+peso_stats <- salud_individual %>%
+  summarise(
+    min_peso = min(peso_kg, na.rm = TRUE),
+    promedio_peso = round(mean(peso_kg, na.rm = TRUE), 1),
+    max_peso = max(peso_kg, na.rm = TRUE)
+  )
+
+presion_stats <- salud_individual %>%
+  summarise(
+    promedio_sistolica = round(mean(presion_sistolica, na.rm = TRUE), 1),
+    promedio_diastolica = round(mean(presion_diastolica, na.rm = TRUE), 1)
+  )
+
+# Mostrar en pantalla (para consola o RMarkdown)
+cat("Resumen de Edad:\n")
+print(edad_stats)
+
+cat("\nResumen de Peso (kg):\n")
+print(peso_stats)
+
+cat("\nPromedios de Presión Arterial:\n")
+print(presion_stats)
+
+```
+
+```{r}
+resumen_final <- salud_individual %>%
+  summarise(
+    edad_min = min(edad, na.rm = TRUE),
+    edad_media = round(mean(edad, na.rm = TRUE), 1),
+    edad_max = max(edad, na.rm = TRUE),
+    peso_min = min(peso_kg, na.rm = TRUE),
+    peso_media = round(mean(peso_kg, na.rm = TRUE), 1),
+    peso_max = max(peso_kg, na.rm = TRUE),
+    presion_sistolica_prom = round(mean(presion_sistolica, na.rm = TRUE), 1),
+    presion_diastolica_prom = round(mean(presion_diastolica, na.rm = TRUE), 1)
+  )
+print(resumen_final)
+
+```
+
+
+```{r}
+rm(list = setdiff(ls(), "salud_individual"))
+
+```
+
