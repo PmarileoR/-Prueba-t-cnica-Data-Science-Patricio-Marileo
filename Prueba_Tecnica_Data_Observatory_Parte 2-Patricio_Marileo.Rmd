@@ -1,0 +1,989 @@
+---
+title: "Prueba Tecnica Pregunta 2"
+author: "P Marileo"
+date: "2025-06-04"
+output: html_document
+---
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(stringi)
+library(stringr)
+library(scales)
+library(tidyr)
+library(factoextra)
+library(reshape2)
+library(randomForest)
+library(clustMixType)
+
+```
+
+```{r}
+datos_censo <- read_csv("C:/Users/pmmpm/Downloads/datos/datos_viviendas_censo.csv")
+View(datos_censo)
+```
+
+```{r}
+table(datos_censo$jefe_hogar_sexo)
+```
+```{r}
+M <- 15821 / 31660
+F <- 15839 / 31660
+
+cat("Proporción Hombres:", round(M * 100, 2), "%\n")
+cat("Proporción Mujeres:", round(F * 100, 2), "%\n")
+cat("Total:", round((M + F) * 100, 2), "%\n")
+
+```
+```{r}
+
+# 1. Crear columnas auxiliares de validación
+datos_censo <- datos_censo %>%
+  mutate(
+    total_genero = num_hombres + num_mujeres,
+    total_edad = num_menores_18 + num_adultos_18_64 + num_adultos_65_plus,
+    valido_genero = total_genero <= num_personas_hogar,
+    valido_edad = total_edad <= num_personas_hogar
+  )
+
+# 2. Cuantificar inconsistencias
+cat("Casos con exceso de género:", sum(!datos_censo$valido_genero), "\n")
+cat("Casos con exceso de edad:", sum(!datos_censo$valido_edad), "\n")
+cat("Casos que violan al menos una de las reglas:", sum(!(datos_censo$valido_genero & datos_censo$valido_edad)), "\n")
+
+# 3. Guardar casos eliminados 
+casos_invalidos_censo <- datos_censo %>%
+  filter(!valido_genero | !valido_edad)
+
+# 4. Eliminar los registros inválidos
+datos_censo <- datos_censo %>%
+  filter(valido_genero & valido_edad) %>%
+  select(-total_genero, -total_edad, -valido_genero, -valido_edad)
+
+```
+# Limpieza de Nombres Comunas 
+
+```{r}
+datos_censo <- datos_censo %>%
+  mutate(comuna = str_to_title(stri_trans_general(comuna, "Latin-ASCII")))
+
+```
+
+```{r}
+unique(datos_censo$comuna)
+```
+```{r}
+datos_censo <- datos_censo %>%
+  mutate(
+    comuna = str_to_title(stri_trans_general(comuna, "Latin-ASCII")),
+    comuna = case_when(
+      comuna %in% c("Providencia", "Provi") ~ "Providencia",
+      comuna %in% c("Vina Del Mar", "Vina", "V. Del Mar") ~ "Viña Del Mar",
+      comuna %in% c("Santiago", "Stgo") ~ "Santiago",
+      comuna %in% c("Valparaiso", "Valpo") ~ "Valparaíso",
+      comuna %in% c("Concepcion", "Conce") ~ "Concepción",
+      comuna %in% c("Las Condes", "Condes") ~ "Las Condes",
+      TRUE ~ comuna
+    )
+  )
+
+```
+
+```{r}
+unique(datos_censo$comuna)
+```
+
+# Validación de coherencia interna del hogar:
+ Se evaluó que la suma de los miembros por género (num_hombres + num_mujeres)
+ y la suma por grupos etarios (menores de 18, adultos 18-64, adultos 65+)
+ no excediera el total de personas declaradas en el hogar (num_personas_hogar).
+
+# Esta validación garantiza que no existan más personas clasificadas dentro del hogar
+ de las que el mismo registro declara como total
+ 
+ 
+```{r}
+hist(datos_censo$num_dormitorios,
+     breaks = 20,
+     col = "skyblue",
+     main = "Distribución de Dormitorios",
+     xlab = "Dormitorio",
+     ylab = "Frecuencia")
+
+```
+```{r}
+hist(datos_censo$num_personas_hogar,
+     breaks = 20,
+     col = "skyblue",
+     main = "Distribución de Personas Hogar",
+     xlab = "Personas por Hogar",
+     ylab = "Frecuencia")
+
+```
+```{r}
+# Se utilizo como criterio de segemntacion 4 personas pro habitacion para que el criterio de validacion no sacara hogares en situacion de emergencia habitacional ya que el estipulado por el Banco mundial es 3 
+datos_censo <- datos_censo %>%
+  mutate(
+    personas_por_pieza = num_personas_hogar / num_dormitorios,
+    valido_habitacional = ifelse(is.na(personas_por_pieza), FALSE, personas_por_pieza <= 4)
+  )
+
+```
+
+```{r}
+datos_censo <- datos_censo %>%
+  filter(valido_habitacional)
+datos_censo <- datos_censo %>%
+  select(-valido_habitacional)
+# limpieza y borrado de columnas 
+```
+
+```{r}
+datos_censo <- datos_censo %>%
+  mutate(
+    inconsistente_servicios = case_when(
+      electricidad == "No" & (internet == "Sí" | telefono_fijo == "Sí") ~ TRUE,
+      agua_potable == "No" & internet == "Sí" & gas_natural == "Sí" ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+
+# Contar y guardar inconsistentes
+cat("Casos con inconsistencias en servicios básicos:", sum(datos_censo$inconsistente_servicios), "\n")
+
+casos_inconsistentes_servicios <- datos_censo %>%
+  filter(inconsistente_servicios)
+
+# Eliminar de la base principal
+datos_censo <- datos_censo %>%
+  filter(!inconsistente_servicios) %>%
+  select(-inconsistente_servicios)
+
+```
+```{r}
+datos_censo <- datos_censo %>%
+  mutate(
+    indice_masculinidad = case_when(
+      num_personas_hogar > 0 ~ round((num_hombres / num_personas_hogar) * 100, 1),
+      TRUE ~ NA_real_
+    )
+  )
+# El Indice fue creado contra habitantes del hogar para que sea mas facil su interpretaccion al quedar en porcentajes de 0 a 100%
+
+
+```
+
+
+
+
+# Se validó la coherencia interna en el acceso a servicios básicos:
+# - No es lógico que un hogar sin electricidad tenga acceso a internet o teléfono fijo.
+# - Tampoco es razonable que un hogar sin agua potable declare simultáneamente tener internet y gas natural.
+# Estos casos se consideraron inconsistentes y fueron eliminados para mantener integridad analítica.
+
+```{r}
+unique(select(datos_censo, tipo_vivienda,material_paredes, material_techo,))
+# Vemos la conformacion de los datos antes de aplicar tecnica 
+```
+
+```{r}
+datos_censo <- datos_censo %>%
+  mutate(
+    tipo_vivienda = str_to_title(stri_trans_general(tipo_vivienda, "Latin-ASCII")),
+    material_paredes = str_to_title(stri_trans_general(material_paredes, "Latin-ASCII")),
+    material_techo = str_to_title(stri_trans_general(material_techo, "Latin-ASCII"))
+  )
+# Vamos a aplicar tecnicaa de NPL para hacer la limpieza mas rapida
+```
+
+```{r}
+datos_censo <- datos_censo %>%
+  mutate(
+    material_paredes = case_when(
+      material_paredes %in% c("Wood") ~ "Madera",
+      material_paredes %in% c("Hormigon", "hormigon") ~ "Hormigón",
+      TRUE ~ material_paredes
+    ),
+    
+    material_techo = case_when(
+      material_techo %in% c("Tejas", "tejas") ~ "Tejas",
+      material_techo %in% c("Zinc", "ZINC") ~ "Zinc",
+      material_techo %in% c("Losa") ~ "Losa",
+      material_techo %in% c("Paja") ~ "Paja",
+      TRUE ~ material_techo
+    )
+  )
+
+```
+
+```{r}
+unique(datos_censo$tipo_vivienda)
+
+# Se hace Validacion para ver si quedo correcto en vivienda
+```
+```{r}
+datos_censo <- datos_censo %>%
+  mutate(
+    tipo_vivienda = str_to_title(stri_trans_general(tipo_vivienda, "Latin-ASCII")),
+    tipo_vivienda = case_when(
+      tipo_vivienda %in% c("Departam.", "Depto.", "Dpto") ~ "Departamento",
+      tipo_vivienda == "Pareada" ~ "Casa Pareada",
+      tipo_vivienda == "Media Agua" ~ "Mediagua",
+      TRUE ~ tipo_vivienda
+    )
+  )
+```
+
+```{r}
+unique(datos_censo$material_paredes)
+```
+```{r}
+datos_censo <- datos_censo %>%
+  mutate(
+    material_paredes = case_when(
+      material_paredes %in% c("Concrete", "Hormigon", "hormigon") ~ "Hormigón",
+      TRUE ~ material_paredes
+    )
+  )
+
+```
+
+```{r}
+unique(datos_censo$material_techo)
+```
+```{r}
+# Chapa se considero como techo de Zinc 
+datos_censo <- datos_censo %>%
+  mutate(
+    material_techo = case_when(
+      str_to_lower(material_techo) %in% c("zinc", "chapa") ~ "Zinc",
+      str_to_lower(material_techo) %in% c("eternit") ~ "Fibrocemento",
+      str_to_lower(material_techo) %in% c("tejas") ~ "Tejas",
+      str_to_lower(material_techo) %in% c("losa") ~ "Losa",
+      str_to_lower(material_techo) %in% c("paja") ~ "Paja",
+      TRUE ~ str_to_title(material_techo)
+    )
+  )
+
+```
+
+
+```{r}
+datos_censo %>%
+  count(tipo_vivienda, material_paredes, material_techo) %>%
+  arrange(desc(n))
+# Compocision de materales no seria real , por lo que se van a a sumir algunos supuestos como que las mediaaguas no pueden ser de cemento 
+```
+```{r}
+datos_censo %>%
+  count(tipo_vivienda, material_paredes, material_techo) %>%
+  arrange(desc(n))
+```
+
+
+
+```{r}
+# Validación de coherencia estructural según tipo de vivienda
+# Se consideran inconsistentes y son eliminadas:
+# - Mediaguas que no tengan paredes de madera o techos pesados
+#   Se endurece el criterio: ahora solo se permite techo de zinc (se excluye paja y chapa por estándar actual).
+# - Departamentos que tengan paredes de adobe o madera (materiales no compatibles con edificaciones verticales).
+# - Departamentos con techos de paja (material precario y estructuralmente inviable para esa tipología).
+# - Casas pareadas construidas en adobe con techos de losa (por la incompatibilidad estructural del peso).
+# - Casas de madera con techos de losa (por el peso excesivo sobre una estructura ligera).
+# Estas condiciones buscan eliminar combinaciones constructivas poco plausibles dadas las restricciones físicas 
+# y técnicas comunes en edificaciones residenciales en contextos urbanos y rurales de Chile.
+
+
+datos_censo <- datos_censo %>%
+  mutate(
+    inconsistencia_estructura = case_when(
+      # Mediagua con pared no madera o techo no liviano
+      tipo_vivienda == "Mediagua" &
+        (str_to_lower(material_paredes) != "madera" |
+         !(str_to_lower(material_techo) %in% c("zinc"))) ~ TRUE,  
+
+      # Departamento con pared de madera o adobe
+      tipo_vivienda == "Departamento" &
+        str_to_lower(material_paredes) %in% c("madera", "adobe") ~ TRUE,
+
+      # Departamento con techo de paja
+      tipo_vivienda == "Departamento" &
+        str_to_lower(material_techo) == "paja" ~ TRUE,
+
+      # Casa Pareada con adobe y losa (peso estructural incoherente)
+      tipo_vivienda == "Casa Pareada" &
+        str_to_lower(material_paredes) == "adobe" &
+        str_to_lower(material_techo) == "losa" ~ TRUE,
+
+      # Casa con madera y losa
+      tipo_vivienda == "Casa" &
+        str_to_lower(material_paredes) == "madera" &
+        str_to_lower(material_techo) == "losa" ~ TRUE,
+
+      
+      TRUE ~ FALSE
+    )
+  ) %>%
+  filter(!inconsistencia_estructura) %>%
+  select(-inconsistencia_estructura)
+
+
+
+```
+
+
+```{r}
+
+ggplot(datos_censo, aes(x = tipo_vivienda, y = personas_por_pieza, fill = tipo_vivienda)) +
+  geom_boxplot(outlier.color = "red", outlier.shape = 1) +
+  labs(
+    title = "Densidad de personas por habitación según tipo de vivienda",
+    x = "Tipo de vivienda",
+    y = "Personas por habitación"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")  
+
+# Diferencias Irreleveantes a simple vista en Box plot 
+
+```
+
+```{r}
+datos_censo <- datos_censo %>%
+  mutate(across(c(agua_potable, electricidad, internet, gas_natural, telefono_fijo),
+                ~ ifelse(. == "Sí", 1, 0))) %>%
+  mutate(servicios_disponibles = agua_potable + electricidad + internet + gas_natural + telefono_fijo)
+
+```
+
+```{r}
+
+
+ggplot(datos_censo, aes(x = factor(servicios_disponibles), y = ingreso_mensual_hogar, fill = factor(servicios_disponibles))) +
+  geom_boxplot(outlier.color = "red", outlier.shape = 1) +
+  scale_fill_brewer(palette = "Set2") +  # Cambia el esquema de colores si prefieres otro
+  scale_y_continuous(labels = comma) +  # Evita notación científica
+  labs(
+    title = "Relación entre ingreso del hogar y servicios básicos disponibles",
+    x = "Cantidad de servicios disponibles (0 a 5)",
+    y = "Ingreso mensual del hogar",
+    fill = "Servicios"
+  ) +
+  theme_minimal()
+
+
+```
+
+# En este caso se sugiere revisar el ingreso per cápita, ya que la distribución del ingreso mensual total por hogar
+ podría ocultar desigualdades internas debido al tamaño del grupo familiar.
+ Aunque la media y la mediana del ingreso mensual son similares, lo que sugiere una distribución cercana a la simetría,
+ el indicador per cápita permite detectar hogares con ingresos bajos debido a que se ajusta por número de personas.
+
+
+
+```{r}
+# Calcular límites del IQR
+q1 <- quantile(datos_censo$ingreso_mensual_hogar, 0.25, na.rm = TRUE)
+q3 <- quantile(datos_censo$ingreso_mensual_hogar, 0.75, na.rm = TRUE)
+iqr <- q3 - q1
+
+limite_inferior <- q1 - 1.5 * iqr
+limite_superior <- q3 + 1.5 * iqr
+
+# Marcar outliers
+datos_censo <- datos_censo %>%
+  mutate(outlier_ingresos = ingreso_mensual_hogar < limite_inferior | ingreso_mensual_hogar > limite_superior)
+
+# Iqr para detectear Outlier y tomar decision sobre indice 
+
+```
+
+```{r}
+summary(datos_censo$ingreso_mensual_hogar)
+
+#Justificación del índice de ingreso per cápita
+
+#Durante la revisión de la variable ingreso_mensual_hogar, se observó que tanto la media (CLP $1.654.392) como la mediana (CLP $1.661.858) presentaban valores muy similares. Esto podría sugerir una distribución aparentemente simétrica y sin sesgos, lo cual es engañoso, ya que no considera el tamaño del hogar.
+```
+```{r}
+ggplot(datos_censo, aes(x = ingreso_mensual_hogar)) +
+  geom_histogram(aes(y = ..density..), binwidth = 200000, fill = "lightblue", color = "black") +
+  geom_density(color = "darkblue", size = 1.2) +
+  geom_vline(aes(xintercept = mean(ingreso_mensual_hogar, na.rm = TRUE)), color = "red", linetype = "dashed") +
+  geom_vline(aes(xintercept = median(ingreso_mensual_hogar, na.rm = TRUE)), color = "green", linetype = "dashed") +
+  labs(
+    title = "Distribución del ingreso mensual del hogar",
+    x = "Ingreso mensual",
+    y = "Densidad"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+# Creacion del indice 
+datos_censo <- datos_censo %>%
+  mutate(
+    ingreso_per_capita = ifelse(num_personas_hogar > 0, ingreso_mensual_hogar / num_personas_hogar, NA)
+  )
+
+```
+
+```{r}
+summary(datos_censo$ingreso_per_capita)
+
+```
+```{r}
+ggplot(datos_censo, aes(x = ingreso_per_capita)) +
+  geom_histogram(binwidth = 50000, fill = "lightgreen", color = "black") +
+  geom_density(aes(y = ..count..), color = "darkgreen", size = 1.2) +
+  labs(
+    title = "Distribución del ingreso per cápita",
+    x = "Ingreso per cápita",
+    y = "Frecuencia"
+  ) +
+  theme_minimal()
+
+```
+# La diferencia entre la media (497.610) y la mediana (289.432) del ingreso per cápita evidencia un sesgo positivo,
+lo que sugiere que existen hogares con ingresos per cápita muy altos que influyen en el promedio.
+Por lo tanto, el ingreso per cápita es más representativo para evaluar condiciones socioeconómicas que el ingreso total e procede a hacer los graficos con ingreso per capita .
+
+```{r}
+ggplot(datos_censo, aes(x = factor(servicios_disponibles), y = ingreso_per_capita, fill = factor(servicios_disponibles))) +
+  geom_boxplot(outlier.color = "red", outlier.shape = 1) +
+  scale_fill_brewer(palette = "Set2") +  
+  scale_y_continuous(labels = scales::comma) +  
+  labs(
+    title = "Relación entre ingreso per cápita y servicios básicos disponibles",
+    x = "Cantidad de servicios disponibles (0 a 5)",
+    y = "Ingreso mensual per cápita (CLP)",
+    fill = "Servicios"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+ggplot(datos_censo, aes(x = ingreso_per_capita)) +
+  geom_histogram(aes(y = ..density..), binwidth = 200000, fill = "lightblue", color = "black") +
+  geom_density(color = "darkblue", size = 1.2) +
+  geom_vline(aes(xintercept = mean(ingreso_per_capita, na.rm = TRUE)), 
+             color = "red", linetype = "dashed", size = 1, show.legend = TRUE) +
+  geom_vline(aes(xintercept = median(ingreso_per_capita, na.rm = TRUE)), 
+             color = "green", linetype = "dashed", size = 1, show.legend = TRUE) +
+  annotate("text", x = mean(datos_censo$ingreso_per_capita, na.rm = TRUE), 
+           y = 0.000005, label = "Media", color = "red", angle = 90, vjust = -0.5) +
+  annotate("text", x = median(datos_censo$ingreso_per_capita, na.rm = TRUE), 
+           y = 0.000005, label = "Mediana", color = "green", angle = 90, vjust = -0.5) +
+  scale_x_continuous(labels = comma) +
+  labs(
+    title = "Distribución del ingreso mensual per cápita",
+    x = "Ingreso mensual per cápita (CLP)",
+    y = "Densidad"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+colSums(is.na(datos_censo)) # Revision de Valores Na
+```
+```{r}
+datos_censo <- datos_censo %>%
+  mutate(score_calidad = 100)  # Puntaje inicial perfecto
+
+```
+
+
+## Objetivo del análisis
+
+Este informe tiene como objetivo explorar la calidad y estructura de los datos de vivienda en un censo, con énfasis en la validación de coherencia interna, estructural y sociodemográfica. Se busca identificar patrones asociados al nivel socioeconómico del hogar y su acceso a servicios básicos, utilizando técnicas estadísticas clásicas y de machine learning (regresión logística y Random Forest). Además, se desarrolla un índice de calidad del registro y se examina la composición física de la vivienda como posible predictor del ingreso per cápita.
+
+
+
+
+
+
+```{r}
+datos_censo <- datos_censo %>%
+  mutate(
+    # Penalización por NAs críticos
+    score_calidad = ifelse(is.na(num_personas_hogar) | num_personas_hogar == 0, score_calidad - 25, score_calidad),
+    score_calidad = ifelse(is.na(num_dormitorios) | num_dormitorios == 0, score_calidad - 15, score_calidad),
+    score_calidad = ifelse(is.na(ingreso_mensual_hogar), score_calidad - 20, score_calidad),
+    
+    # Penalización por outliers en ingreso total
+    score_calidad = ifelse(outlier_ingresos, score_calidad - 10, score_calidad),
+    
+    # Penalización por densidad habitacional excesiva (>4)
+    score_calidad = ifelse(personas_por_pieza > 4, score_calidad - 10, score_calidad),
+    
+    # Penalización por servicios bajos (0 o 1)
+    score_calidad = ifelse(servicios_disponibles <= 1, score_calidad - 10, score_calidad),
+    
+    # Penalización si índice de masculinidad no se puede calcular
+    score_calidad = ifelse(is.na(indice_masculinidad), score_calidad - 5, score_calidad),
+    
+    # Penalización por inconsistencias estructurales (ya fueron filtradas, pero si se reutiliza en otra base puede reactivarse)
+    score_calidad = ifelse(tipo_vivienda == "Mediagua" & material_paredes != "Madera", score_calidad - 10, score_calidad),
+    
+    # Ajuste final: ningún hogar puede tener score < 0
+    score_calidad = pmax(score_calidad, 0)
+  )
+# Calcular media y desviación estándar del ingreso per cápita
+media_pc <- mean(datos_censo$ingreso_per_capita, na.rm = TRUE)
+sd_pc <- sd(datos_censo$ingreso_per_capita, na.rm = TRUE)
+
+# Penalización por distancia respecto a la media (cada desviación = -10 puntos)
+datos_censo <- datos_censo %>%
+  mutate(
+    desvio_std_ingreso_pc = abs(ingreso_per_capita - media_pc) / sd_pc,
+    score_calidad = score_calidad - round(desvio_std_ingreso_pc) * 10,
+    score_calidad = pmax(score_calidad, 0)  # No permitir puntajes negativos
+  )
+
+
+
+```
+
+# Sistema de Scoring de Calidad del Registro
+
+Se implementó un sistema de `score_calidad` que parte en 100 puntos para cada registro y es penalizado según diversas condiciones que reflejan posibles problemas de calidad en los datos. Este sistema permite evaluar la **confiabilidad** relativa de cada observación, priorizando aquellas que presentan información completa, coherente y plausible.
+
+## Penalizaciones aplicadas:
+
+- **Variables críticas faltantes o inválidas:**
+  - `num_personas_hogar` ausente o igual a 0: –25 puntos.
+  - `num_dormitorios` ausente o igual a 0: –15 puntos.
+  - `ingreso_mensual_hogar` ausente: –20 puntos.
+
+- **Sospechas estructurales o inconsistencias:**
+  - Ingreso mensual del hogar detectado como outlier por IQR: –10 puntos.
+  - Más de 4 personas por dormitorio (`personas_por_pieza > 4`): –10 puntos.
+  - Disponibilidad de 0 o 1 servicios básicos: –10 puntos.
+  - Índice de masculinidad no calculable (NA): –5 puntos.
+  - Vivienda tipo "Mediagua" con paredes distintas a "Madera": –10 puntos.
+
+- **Distancia respecto a la media del ingreso per cápita:**
+  - Por cada desviación estándar de diferencia con la media: –10 puntos.
+
+## Consideraciones adicionales:
+- Se asegura que ningún puntaje final sea menor a 0 mediante `pmax(score_calidad, 0)`.
+- Este sistema es **modular** y permite incorporar nuevas penalizaciones fácilmente según los objetivos analíticos.
+- Permite segmentar registros por confiabilidad, ayudando a filtrar, ponderar o analizar subgrupos según su calidad de datos.
+- se pudo hacer por combincaciones posibles de estructuras de vivienda , pero en rigor del tiempo hubiera procesado tiempo 
+
+```{r}
+datos_censo <- datos_censo %>%
+  mutate(
+    categoria_calidad = case_when(
+      score_calidad >= 90 ~ "Alta",
+      score_calidad >= 70 ~ "Media",
+      TRUE ~ "Baja"
+    )
+  )
+
+```
+
+
+
+```{r}
+ggplot(datos_censo, aes(x = score_calidad, fill = categoria_calidad)) +
+  geom_histogram(binwidth = 5, color = "black", alpha = 0.8) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Distribución del score de calidad de los registros",
+       x = "Score de calidad",
+       y = "Cantidad de viviendas",
+       fill = "Categoría") +
+  theme_minimal()
+
+```
+```{r}
+variables_pca <- datos_censo %>%
+  select(num_dormitorios, num_banos, superficie_m2, num_personas_hogar,
+         num_hombres, num_mujeres, num_menores_18, num_adultos_18_64, num_adultos_65_plus,
+           ingreso_mensual_hogar, ingreso_per_capita, personas_por_pieza, 
+         indice_masculinidad, jefe_hogar_edad) %>%
+  drop_na()  # Eliminamos registros incompletos para el PCA
+
+datos_pca_scaled <- scale(variables_pca)
+pca_resultado <- prcomp(datos_pca_scaled, center = TRUE, scale. = TRUE)
+summary(pca_resultado)
+fviz_eig(pca_resultado, addlabels = TRUE, ylim = c(0, 50))
+
+fviz_pca_var(pca_resultado, col.var = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE)
+
+```
+## Análisis de Componentes Principales (PCA)
+
+Se aplicó un análisis de componentes principales (PCA) a 14 variables socioeconómicas y de vivienda estandarizadas para identificar las dimensiones latentes que mejor explican la variabilidad de los datos.
+
+### Varianza explicada:
+
+- El primer componente (PC1) explica el **30,5%** de la varianza, seguido por PC2 con un **12,9%**, acumulando un **43,4%** entre ambos.
+- Con **4 componentes** se explica más del **60%** de la varianza (**60,5%**), lo que sugiere que existe una estructura subyacente reducida que captura buena parte de la información.
+
+### Variables más influyentes:
+
+En el gráfico de contribución de variables (círculo de correlaciones), se observa que:
+
+- **`num_hombres`**, **`indice_masculinidad`**, **`num_mujeres`** y **`num_personas_hogar`** son las variables con mayor carga en el **primer componente (PC1)**.
+- Estas variables representan la dimensión **demográfica**, indicando que el tamaño del hogar y su composición por género son factores estructurales fundamentales.
+- **`ingreso_mensual_hogar`**, **`ingreso_per_capita`** y **`jefe_hogar_edad`** tienen contribuciones importantes en el **segundo componente (PC2)**, alineados con una dimensión **socioeconómica**.
+
+### Interpretación general:
+
+- El análisis sugiere que los hogares pueden diferenciarse principalmente por su **estructura demográfica (PC1)** y sus **condiciones económicas (PC2)**.
+- El **índice de masculinidad**, al ser altamente influyente, podría estar capturando distorsiones en la declaración de sexo dentro del hogar o reflejar composiciones familiares atípicas.
+- La **densidad por habitación** (`personas_por_pieza`) también contribuye moderadamente, indicando su relevancia para caracterizar situaciones de **hacinamiento**.
+
+Lo anterior siguiere que realizar un analisis de correlacion entre caracteristicas de la vivienda e ingresos un buen segmentador 
+
+```{r}
+# Kruskal-Wallis para ingreso_per_capita según tipo_vivienda
+kruskal.test(ingreso_per_capita ~ tipo_vivienda, data = datos_censo)
+
+# Kruskal-Wallis para ingreso_per_capita según material_paredes
+kruskal.test(ingreso_per_capita ~ material_paredes, data = datos_censo)
+
+# Kruskal-Wallis para ingreso_per_capita según material_techo
+kruskal.test(ingreso_per_capita ~ material_techo, data = datos_censo)
+
+```
+# Interpretacion 
+- Se desprende que individualmente las caracteristicas de compocision de la viviendas no tienen diferencias significativas entre ingresos Per Capita 
+
+- Se Procede a unir para ver si en conjutno si la tienen 
+-Kruskal-Wallis se utilizo por que la variable ingreso per capita no mantiene distribcuion normal 
+
+```{r}
+datos_censo <- datos_censo %>%
+  mutate(vivienda_compuesta = paste(tipo_vivienda, material_paredes, material_techo, sep = "_"))
+
+```
+
+```{r}
+kruskal.test(ingreso_per_capita ~ vivienda_compuesta, data = datos_censo)
+
+```
+### Análisis de diferencias en ingreso per cápita según características de vivienda
+
+Se evaluó si existían diferencias significativas en el ingreso per cápita según las características físicas de la vivienda:
+
+- Tipo de vivienda
+- Material de paredes
+- Material de techo
+
+Dado que la variable `ingreso_per_capita` no sigue una distribución normal, se utilizó el test no paramétrico de Kruskal-Wallis para comparar medianas entre grupos, tanto para cada variable individual como para una variable compuesta (`vivienda_compuesta`) que agrupa las tres características.
+
+**Resultado:**  
+Kruskal-Wallis chi-squared = 46.852, df = 47, p-value = 0.4786
+
+**Interpretación:**  
+No se encontraron diferencias estadísticamente significativas en el ingreso per cápita según los distintos perfiles estructurales de vivienda.
+
+Esto sugiere que, en esta muestra, las condiciones materiales del hogar no están fuertemente asociadas al ingreso disponible por persona, al menos desde el punto de vista estadístico.
+
+```{r}
+# Calcular el total de registros por comuna
+top_comunas <- datos_censo %>%
+  count(comuna, sort = TRUE) %>%
+  top_n(10, n) %>%
+  pull(comuna)
+
+# Filtrar solo esas comunas
+datos_top <- datos_censo %>%
+  filter(comuna %in% top_comunas)
+
+# Agrupar por comuna y tipo estructural compuesto
+datos_top <- datos_top %>%
+  group_by(comuna, vivienda_compuesta) %>%
+  summarise(freq = n(), .groups = "drop") %>%
+  group_by(comuna) %>%
+  mutate(proporcion = freq / sum(freq)) %>%
+  arrange(comuna, desc(proporcion)) %>%
+  slice_head(n = 1)  # Elegir el patrón más frecuente por comuna
+
+# Mostrar resultado
+datos_top
+
+
+
+```
+
+**Hallazgos clave sobre distribución de tipos de vivienda:**
+
+1. **Patrones predominantes:**
+   - 🏘️ **Casa pareada** emerge como tipología recurrente en múltiples comunas (Las Condes, Los Andes, Providencia, Santiago)
+   - 🧱 **Adobe** mantiene alta prevalencia como material constructivo (Concepción, Las Condes, Providencia, Santiago)
+   - 🏫 **Zinc** domina como material de techado (presente en 7 de 10 casos analizados)
+
+2. **Distribución geográfica:**
+   - 📍 Concentración en **zona centro** del país (desde Valparaíso a Concepción)
+   - Excepciones en extremos: Puerto Montt (sur) y Punta Arenas (extremo sur)
+
+3. **Casos destacados:**
+   - Máxima proporción: Las Condes (Casa Pareada_Adobe_Tejas - 5.96%)
+   - Combinación inusual: Punta Arenas (Casa_Hormigón_Zinc - 5.02%)
+   - Patrón moderno: Valparaíso (Departamento_Hormigón_Tejas - 4.32%)
+
+**Interpretación socio-constructiva:**
+- La persistencia del **adobe** (tradición constructiva) junto al **zinc** (material económico) revela procesos híbridos de desarrollo urbano
+- Las **casas pareadas** sugieren densificación intermedia en zonas urbanas consolidadas
+- La muestra confirma la **centralidad geográfica** del fenómeno analizado, con adaptaciones locales en extremos sur
+
+```{r}
+datos_censo <- datos_censo %>%
+  mutate(
+    ingreso_alto = ifelse(ingreso_per_capita > 2000000, 1, 0)
+  )
+```
+
+```{r}
+set.seed(123)
+# Convertir la variable objetivo a factor (importante para glm)
+datos_censo <- datos_censo %>% 
+  mutate(ingreso_alto = as.factor(ingreso_alto))
+
+# Modelo de regresión logística
+modelo_logit <- glm(ingreso_alto ~ 
+                     comuna + 
+                     tipo_vivienda + 
+                     num_dormitorios + 
+                     num_banos + 
+                     superficie_m2 + 
+                     material_paredes + 
+                     jefe_hogar_edad + 
+                     jefe_hogar_sexo + 
+                     jefe_hogar_educacion,
+                   data = datos_censo,
+                   family = binomial(link = "logit"))  # Especificamos que es logística
+
+# Resumen del modelo
+summary(modelo_logit)
+```lo_rf <- randomForest(ingreso_alto ~ .,
+                         data = datos_censo,  
+                         ntree = 500,
+                         importance = TRUE)
+
+# Evaluación básica
+print(modelo_rf)  
+varImpPlot(modelo_rf)
+```
+
+```{r}
+# Convertir ingreso_alto a factor si no lo está
+datos_censo <- datos_censo %>%
+  mutate(ingreso_alto = as.factor(ingreso_alto))
+
+# Reutilizar función para intervalo
+ic_media <- function(x, nivel = 0.95) {
+  n <- length(x)
+  media <- mean(x, na.rm = TRUE)
+  error <- qt(1 - (1 - nivel)/2, df = n - 1) * sd(x, na.rm = TRUE) / sqrt(n)
+  c(inf = media - error, media = media, sup = media + error)
+}
+
+# Calcular estadísticas por ingreso_alto
+ic_ingreso_alto <- datos_censo %>%
+  group_by(ingreso_alto) %>%
+  summarise(
+    media = mean(ingreso_per_capita, na.rm = TRUE),
+    mediana = median(ingreso_per_capita, na.rm = TRUE),
+    n = n(),
+    ic_inf = ic_media(ingreso_per_capita)[1],
+    ic_central = ic_media(ingreso_per_capita)[2],
+    ic_sup = ic_media(ingreso_per_capita)[3]
+  )
+
+ic_ingreso_alto
+
+```
+# Validación estadística de la variable `ingreso_alto`
+
+Se validó la variable `ingreso_alto` con un nivel de confianza del 95% para evaluar la solidez de su aplicación como variable objetivo en modelos predictivos. Al comparar los grupos (hogares con ingreso per cápita mayor a $2.000.000 y el resto), se observó que:
+
+- Las **medias y medianas** de ingreso per cápita difieren ampliamente entre ambos grupos.
+- Los **intervalos de confianza del 95%** para la media no se superponen, lo que indica una **diferencia estadísticamente significativa** entre ambos segmentos.
+
+Esta validación respalda el uso de `ingreso_alto` como una **variable confiable y representativa** para identificar hogares de alto ingreso dentro de la muestra, con sustento estadístico suficiente para alimentar modelos de clasificación como regresión logística o Random Forest.
+
+
+
+```{r}
+# Modelo de regresión logística corregido y optimizado
+modelo_logit2<- glm(ingreso_alto ~ tipo_vivienda + 
+                    num_dormitorios + 
+                    num_banos + 
+                    superficie_m2 + 
+                    material_paredes + 
+                    jefe_hogar_edad + 
+                    jefe_hogar_sexo + 
+                    jefe_hogar_educacion,
+                  data = datos_censo,
+                  family = binomial(link = "logit"))
+
+# Resumen mejorado del modelo
+summary(modelo_logit2)
+```
+**Hallazgos Clave sobre Dormitorios e Ingresos Altos:**
+
+ **Relación inversa significativa**  
+   - El análisis confirma que hogares con **menos dormitorios** tienen mayor probabilidad de ingresos altos (>2M)  
+   - Cada dormitorio adicional reduce la odds de ingreso alto en ~30% (OR ≈ 0.7, p < 0.001)
+
+
+**Limitación metodológica**  
+   - Los modelos de regresión tradicionales subestiman este fenómeno por:  
+     ✓ Distribución no-lineal de ingresos altos  
+     ✓ Efectos de composición no capturados  
+
+**Recomendación analítica:**  
+Complementar con:  
+- Análisis georreferenciados (hotspots de ingresos altos)  
+- Segmentación por tipología familiar
+
+> **Nota sobre la validación del modelo logit:**  
+> No se aplicó validación cruzada ni partición entrenamiento/prueba, debido a que el modelo mostró una capacidad predictiva muy baja desde el inicio. Dado que la proporción de hogares con ingresos per cápita superiores a $2.000.000 era extremadamente baja, cualquier segmentación de la base habría reducido aún más la representatividad del evento, evidenciando el fenómeno pero sin mejorar la capacidad predictiva del modelo. En este contexto, se optó por priorizar la interpretación de coeficientes sobre métricas de clasificación.
+
+
+```{r}
+datos_censo <- datos_censo %>%
+  mutate(
+    nivel_socioeco = case_when(
+      ingreso_per_capita >= quantile(ingreso_per_capita, 0.75, na.rm = TRUE) ~ "Alto",
+      ingreso_per_capita <= quantile(ingreso_per_capita, 0.25, na.rm = TRUE) ~ "Bajo",
+      TRUE ~ "Medio"
+    ),
+    nivel_socioeco = factor(nivel_socioeco, levels = c("Bajo", "Medio", "Alto"))
+  )
+
+
+```
+
+```{r}
+table(datos_censo$nivel_socioeco)
+```
+```{r}
+# Función para IC de la media
+ic_media <- function(x, nivel = 0.95) {
+  n <- length(x)
+  media <- mean(x, na.rm = TRUE)
+  error <- qt(1 - (1 - nivel)/2, df = n - 1) * sd(x, na.rm = TRUE) / sqrt(n)
+  c(inferior = media - error, media = media, superior = media + error)
+}
+
+# Calcular para cada grupo
+ic_por_grupo <- datos_censo %>%
+  group_by(nivel_socioeco) %>%
+  summarise(
+    media = mean(ingreso_per_capita, na.rm = TRUE),
+    mediana = median(ingreso_per_capita, na.rm = TRUE),
+    n = n(),
+    ic_media_inf = ic_media(ingreso_per_capita)[1],
+    ic_media_central = ic_media(ingreso_per_capita)[2],
+    ic_media_sup = ic_media(ingreso_per_capita)[3]
+  )
+
+ic_por_grupo
+```
+```{r}
+ggplot(ic_por_grupo, aes(x = nivel_socioeco, y = ic_media_central)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = ic_media_inf, ymax = ic_media_sup), width = 0.2) +
+  labs(
+    title = "Ingreso per cápita: Media e Intervalo de Confianza por Nivel Socioeconómico",
+    x = "Nivel Socioeconómico",
+    y = "Ingreso per cápita (CLP)"
+  ) +
+  scale_y_continuous(labels = scales::comma) +
+  theme_minimal()
+```
+```{r}
+# Diccionario de comunas con su respectiva región
+asociaciones_comunas <- c(
+  "Arica" = "Arica y Parinacota",
+  "Putre" = "Arica y Parinacota",
+  "Iquique" = "Tarapacá",
+  "Alto Hospicio" = "Tarapacá",
+  "Calama" = "Antofagasta",
+  "Antofagasta" = "Antofagasta",
+  "Copiapo" = "Atacama",
+  "Vallenar" = "Atacama",
+  "La Serena" = "Coquimbo",
+  "Ovalle" = "Coquimbo",
+  "Coquimbo" = "Coquimbo",
+  "Valparaíso" = "Valparaíso",
+  "San Antonio" = "Valparaíso",
+  "Quillota" = "Valparaíso",
+  "Los Andes" = "Valparaíso",
+  "Viña Del Mar" = "Valparaíso",
+  "Quilpue" = "Valparaíso",
+  "Villa Alemana" = "Valparaíso",
+  "Santiago" = "Metropolitana",
+  "Puente Alto" = "Metropolitana",
+  "Maipu" = "Metropolitana",
+  "Nunoa" = "Metropolitana",
+  "La Florida" = "Metropolitana",
+  "Las Condes" = "Metropolitana",
+  "Providencia" = "Metropolitana",
+  "San Bernardo" = "Metropolitana",
+  "Rancagua" = "O'Higgins",
+  "San Fernando" = "O'Higgins",
+  "Curico" = "Maule",
+  "Talca" = "Maule",
+  "Chillan" = "Ñuble",
+  "Los Angeles" = "Biobío",
+  "Talcahuano" = "Biobío",
+  "Concepción" = "Biobío",
+  "Temuco" = "La Araucanía",
+  "Villarrica" = "La Araucanía",
+  "Valdivia" = "Los Ríos",
+  "Osorno" = "Los Lagos",
+  "Puerto Montt" = "Los Lagos",
+  "Castro" = "Los Lagos",
+  "Coyhaique" = "Aysén",
+  "Punta Arenas" = "Magallanes"
+)
+
+```
+
+```{r}
+datos_censo <- datos_censo %>%
+  mutate(region = asociaciones_comunas[as.character(comuna)])
+```
+
+```{r}
+# Calcular proporción de hogares con ingreso alto por región
+resumen_region <- datos_censo %>%
+  filter(!is.na(region)) %>%
+  group_by(region) %>%
+  summarise(
+    total = n(),
+    con_ingreso_alto = sum(as.numeric(as.character(ingreso_alto)) == 1, na.rm = TRUE),
+    prop_alto = con_ingreso_alto / total
+  )
+```
+
+```{r}
+tabla_region <- datos_censo %>%
+  filter(!is.na(region)) %>%
+  group_by(region) %>%
+  summarise(
+    Total_hogares = n(),
+    Con_ingreso_alto = sum(as.numeric(as.character(ingreso_alto)) == 1, na.rm = TRUE),
+    Proporcion_alto = Con_ingreso_alto / Total_hogares
+  ) %>%
+  arrange(desc(Proporcion_alto)) %>%
+  mutate(Proporcion_alto = scales::percent(Proporcion_alto, accuracy = 0.1))
+print(tabla_region)
+```
+
+
+
